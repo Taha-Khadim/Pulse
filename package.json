@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
-    "start": "expo start",
+    "start": "node init && expo start",
     "android": "expo run:android",
     "android:build": "bash -lc 'source scripts/android-env.sh && printf \"sdk.dir=%s\\n\" \"$ANDROID_HOME\" > android/local.properties && cd android && ./gradlew assembleRelease && mkdir -p ../dist && cp app/build/outputs/apk/release/app-release.apk ../dist/Pulse-release.apk && echo \"APK -> dist/Pulse-release.apk (embedded JS, no Metro)\"'",
     "android:build:debug": "bash -lc 'source scripts/android-env.sh && printf \"sdk.dir=%s\\n\" \"$ANDROID_HOME\" > android/local.properties && cd android && ./gradlew assembleDebug && mkdir -p ../dist && cp app/build/outputs/apk/debug/app-debug.apk ../dist/Pulse-debug.apk && echo \"APK -> dist/Pulse-debug.apk (needs Metro: npx expo start)\"'",
