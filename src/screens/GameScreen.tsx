@@ -136,7 +136,12 @@ export const GameScreen = ({ navigation, route }: { navigation: Nav; route: Rt }
           style={styles.gameTouch}
           onPress={(e) => {
             const nx = layout.w > 0 ? e.nativeEvent.locationX / layout.w : 0.5;
-            canvasRef.current?.shoot(nx);
+            const ny = layout.h > 0 ? e.nativeEvent.locationY / layout.h : 0.5;
+            if (ny < 0.35) {
+              canvasRef.current?.shootDestroy(nx);
+            } else {
+              canvasRef.current?.shoot(nx);
+            }
           }}
         >
           <Animated.View style={{ flex: 1, transform: [{ translateX: shake }] }} onLayout={onLayout}>
@@ -158,7 +163,7 @@ export const GameScreen = ({ navigation, route }: { navigation: Nav; route: Rt }
         </Pressable>
 
         <View style={styles.shootHint}>
-          <Text style={[styles.hint, { color: t.muted }]}>tap playfield — aim left / right</Text>
+          <Text style={[styles.hint, { color: t.muted }]}>tap bottom — shoot · tap top — destroy</Text>
         </View>
 
         <PauseOverlay

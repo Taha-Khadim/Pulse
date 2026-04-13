@@ -1,7 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
-  FlatList,
   Pressable,
   StyleSheet,
   Text,
@@ -15,6 +14,8 @@ import { useApp } from '../context/AppContext';
 import { loadProgress, saveProgress } from '../storage/progress';
 import { applyDailyStreak } from '../utils/streak';
 import { themeSurfaces } from '../theme/palettes';
+import { DemoOverlay } from '../components/DemoOverlay';
+import { LevelMap } from '../components/LevelMap';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'Home'>;
 
@@ -24,6 +25,7 @@ export const HomeScreen = ({ navigation }: { navigation: Nav }) => {
   const insets = useSafeAreaInsets();
   const { progress, refresh } = useApp();
   const t = themeSurfaces[progress.settings.theme];
+  const [demoOpen, setDemoOpen] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -43,8 +45,6 @@ export const HomeScreen = ({ navigation }: { navigation: Nav }) => {
     }, [refresh])
   );
 
-  const data = useMemo(() => Array.from({ length: LEVELS }, (_, n) => n + 1), []);
-
   const playLevel = Math.min(Math.max(progress.currentLevel, 1), LEVELS);
 
   const perfectPct = useMemo(() => {
@@ -53,32 +53,9 @@ export const HomeScreen = ({ navigation }: { navigation: Nav }) => {
     return Math.round((progress.perfectLevels.length / c) * 100);
   }, [progress.completedLevels.length, progress.perfectLevels.length]);
 
-  const renderLevel = useCallback(
-    ({ item }: { item: number }) => {
-      const unlocked = item <= progress.currentLevel;
-      const done = progress.completedLevels.includes(item);
-      const perfect = progress.perfectLevels.includes(item);
-      return (
-        <Pressable
-          disabled={!unlocked}
-          onPress={() => navigation.navigate('Game', { levelId: item })}
-          style={[styles.node, { opacity: unlocked ? 1 : 0.35 }]}
-        >
-          <View
-            style={[
-              styles.circle,
-              {
-                borderColor: done ? '#34d399' : t.text,
-                backgroundColor: perfect ? 'rgba(52,211,153,0.15)' : 'transparent',
-              },
-            ]}
-          >
-            <Text style={[styles.nodeText, { color: t.text }]}>{item}</Text>
-          </View>
-        </Pressable>
-      );
-    },
-    [navigation, progress.completedLevels, progress.currentLevel, progress.perfectLevels, t.text]
+  const onMapPlay = useCallback(
+    (level: number) => navigation.navigate('Game', { levelId: level }),
+    [navigation]
   );
 
   return (
@@ -98,7 +75,47 @@ export const HomeScreen = ({ navigation }: { navigation: Nav }) => {
         </View>
       </View>
 
-      <View style={[styles.playCard, { borderColor: t.muted }]}>
+      <Pressable
+        onPress={() => setDemoOpen(true)}
+        style={[styles.demo, { borderColor: t.muted }]}
+      >
+        <Text style={[styles.demoText, { color: t.muted }]}>▶  Demo</Text>
+      </Pressable>
+
+      <Pressable
+        onPress={() => navigation.navigate('Game', { levelId: 1, zenMode: true })}
+        style={[styles.zen, { borderColor: t.muted }]}
+      >
+        <Text style={[styles.zenText, { color: t.muted }]}>Zen practice</Text>
+      </Pressable>
+
+      <DemoOverlay
+        visible={demoOpen}
+        onClose={() => setDemoOpen(false)}
+        textColor={t.text}
+        mutedColor={t.muted}
+        bg={t.card}
+      />
+
+      <View style={styles.statsRow}>
+        <Text style={[styles.stat, { color: t.muted }]}>
+          cleared {progress.completedLevels.length} · perfect {perfectPct}%
+        </Text>
+      </View>
+
+      <Text style={[styles.mapTitle, { color: t.muted }]}>Path</Text>
+      <LevelMap
+        totalLevels={LEVELS}
+        currentLevel={progress.currentLevel}
+        completedLevels={progress.completedLevels}
+        perfectLevels={progress.perfectLevels}
+        textColor={t.text}
+        mutedColor={t.muted}
+        onPlay={onMapPlay}
+        bottomInset={insets.bottom + 100}
+      />
+
+      <View style={[styles.playCard, { borderColor: t.muted, backgroundColor: t.card, paddingBottom: insets.bottom + 14 }]}>
         <Text style={[styles.playLabel, { color: t.muted }]}>Continue</Text>
         <Text style={[styles.playLevel, { color: t.text }]}>Level {playLevel}</Text>
         <Pressable
@@ -108,29 +125,6 @@ export const HomeScreen = ({ navigation }: { navigation: Nav }) => {
           <Text style={[styles.playBtnText, { color: t.text }]}>PLAY</Text>
         </Pressable>
       </View>
-
-      <View style={styles.statsRow}>
-        <Text style={[styles.stat, { color: t.muted }]}>
-          cleared {progress.completedLevels.length} · perfect {perfectPct}%
-        </Text>
-      </View>
-
-      <Pressable
-        onPress={() => navigation.navigate('Game', { levelId: 1, zenMode: true })}
-        style={[styles.zen, { borderColor: t.muted }]}
-      >
-        <Text style={[styles.zenText, { color: t.muted }]}>Zen practice</Text>
-      </Pressable>
-
-      <Text style={[styles.mapTitle, { color: t.muted }]}>Path</Text>
-      <FlatList
-        data={data}
-        keyExtractor={(x) => String(x)}
-        renderItem={renderLevel}
-        numColumns={5}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 24, gap: 10 }}
-        columnWrapperStyle={{ gap: 10 }}
-      />
     </LinearGradient>
   );
 };
@@ -143,10 +137,17 @@ const styles = StyleSheet.create({
   headerIcons: { flexDirection: 'row', gap: 16 },
   iconBtn: { fontSize: 22 },
   playCard: {
-    marginTop: 20,
-    padding: 20,
-    borderRadius: 16,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10,
+    elevation: 10,
+    padding: 16,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     borderWidth: 1,
+    borderBottomWidth: 0,
     alignItems: 'center',
   },
   playLabel: { fontSize: 13, letterSpacing: 2, textTransform: 'uppercase' },
@@ -155,17 +156,9 @@ const styles = StyleSheet.create({
   playBtnText: { letterSpacing: 4, fontSize: 15 },
   statsRow: { marginTop: 12, alignItems: 'center' },
   stat: { fontSize: 13 },
-  zen: { marginTop: 12, paddingVertical: 10, borderRadius: 999, borderWidth: 1, alignItems: 'center' },
+  demo: { marginTop: 16, paddingVertical: 10, borderRadius: 999, borderWidth: 1, alignItems: 'center' },
+  demoText: { fontSize: 14, letterSpacing: 2 },
+  zen: { marginTop: 10, paddingVertical: 10, borderRadius: 999, borderWidth: 1, alignItems: 'center' },
   zenText: { fontSize: 14, letterSpacing: 2 },
   mapTitle: { marginTop: 20, marginBottom: 8, fontSize: 12, letterSpacing: 2 },
-  node: { flex: 1, alignItems: 'center' },
-  circle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 1.5,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  nodeText: { fontSize: 12 },
 });

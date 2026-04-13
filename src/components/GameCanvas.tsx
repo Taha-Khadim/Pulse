@@ -1,6 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
-import Svg, { Circle, G, Line, Polygon, Path } from 'react-native-svg';
+import Svg, { Circle, Defs, G, Line, LinearGradient, Polygon, Path, Stop } from 'react-native-svg';
 import type { LevelConfig } from '../types';
 import { checkAngularCollision, normalizeDeg } from '../game/collision';
 import { COLLISION_SEPARATION_DEG, ROTATION_SPEED_SCALE } from '../game/constants';
@@ -24,6 +24,7 @@ type Props = {
 
 export type GameCanvasHandle = {
   shoot: (aimNormX?: number) => void;
+  shootDestroy: (aimNormX?: number) => void;
   reset: () => void;
 };
 
@@ -87,8 +88,9 @@ const worldRimToLocalBodyDeg = (hitX: number, hitY: number, cx: number, cy: numb
   const wx = dwx / len;
   const wy = dwy / len;
   const ph = (rotDeg * Math.PI) / 180;
-  const lx = wx * Math.cos(ph) - wy * Math.sin(ph);
-  const ly = wx * Math.sin(ph) + wy * Math.cos(ph);
+  // Inverse rotation: subtract rotDeg to go from world → local body frame
+  const lx = wx * Math.cos(ph) + wy * Math.sin(ph);
+  const ly = -wx * Math.sin(ph) + wy * Math.cos(ph);
   return normalizeDeg((Math.atan2(ly, lx) * 180) / Math.PI);
 };
 
@@ -102,8 +104,12 @@ const polygonPoints = (cx: number, cy: number, R: number, sides: number) => {
   return pts.join(' ');
 };
 
-const arrowHeadPath = (x1: number, y1: number, x2: number, y2: number, head = 10) => {
-  const ang = Math.atan2(y2 - y1, x2 - x1);
+const arrowHeadPath = (x1: number, y1: number, x2: number, y2: number) => {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  const head = Math.max(4, Math.min(12, len * 0.15)); // Scale head 15% of arrow length
+  const ang = Math.atan2(dy, dx);
   const a1 = ang + (2.6 * Math.PI) / 3;
   const a2 = ang - (2.6 * Math.PI) / 3;
   const x3 = x2 + head * Math.cos(a1);
@@ -139,8 +145,10 @@ export const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanva
   const speedMul = slowMode ? 0.5 : 1;
   const spinDegPerSec = config.rotationSpeed * ROTATION_SPEED_SCALE * speedMul;
   /** Same radii used for stuck arrows and collision rim (tip sits on playable circle). */
-  const R_OUT = R * 0.97;
+  const R_OUT = R;
   const R_IN = R * 0.36;
+
+  const launchTopY = height * 0.02;
 
   const state = useRef({
     rotationDeg: 0,
@@ -156,6 +164,12 @@ export const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanva
     ended: false,
     vx: 0,
     vy: 0,
+    // destroy arrow state
+    dProjX: cx,
+    dProjY: launchTopY,
+    dFlying: false,
+    dVx: 0,
+    dVy: 0,
   });
 
   const onWinRef = useRef(onWin);
@@ -184,9 +198,14 @@ export const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanva
       ended: false,
       vx: 0,
       vy: 0,
+      dProjX: cx,
+      dProjY: launchTopY,
+      dFlying: false,
+      dVx: 0,
+      dVy: 0,
     };
     force();
-  }, [config.existingAngles, spinDegPerSec, cx, launchY]);
+  }, [config.existingAngles, spinDegPerSec, cx, launchY, launchTopY]);
 
   useEffect(() => {
     resetRound();
@@ -215,7 +234,29 @@ export const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanva
     [paused, config.arrowsToShoot, aimMargin, width, cx, cy, launchY]
   );
 
-  useImperativeHandle(ref, () => ({ shoot, reset: resetRound }), [shoot, resetRound]);
+  const shootDestroy = useCallback(
+    (aimNormX = 0.5) => {
+      if (paused) return;
+      const s = state.current;
+      if (s.ended) return;
+      if (s.dFlying) return;
+      const t = Math.max(0, Math.min(1, aimNormX));
+      const sx = aimMargin + t * (width - 2 * aimMargin);
+      const dx = cx - sx;
+      const dy = cy - launchTopY;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-4) return;
+      s.dProjX = sx;
+      s.dProjY = launchTopY;
+      s.dVx = dx / len;
+      s.dVy = dy / len;
+      s.dFlying = true;
+      force();
+    },
+    [paused, aimMargin, width, cx, cy, launchTopY]
+  );
+
+  useImperativeHandle(ref, () => ({ shoot, shootDestroy, reset: resetRound }), [shoot, shootDestroy, resetRound]);
 
   useEffect(() => {
     if (paused) return;
@@ -302,6 +343,79 @@ export const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanva
           s.projY = y;
         }
       }
+
+      // --- Destroy arrow physics ---
+      if (s.dFlying) {
+        const dpx0 = s.dProjX;
+        const dpy0 = s.dProjY;
+        const travel = flySpeed * dt;
+        const nSub = Math.max(1, Math.ceil(travel / (R * 0.14)));
+        let dx = dpx0;
+        let dy = dpy0;
+        let dHitRes: SegmentHit | null = null;
+        let dRotFrac = 0;
+        const subDt = dt / nSub;
+        for (let k = 0; k < nSub; k++) {
+          const ndx = dx + s.dVx * flySpeed * subDt;
+          const ndy = dy + s.dVy * flySpeed * subDt;
+          const h = segmentCircleHit(cx, cy, R, dx, dy, ndx, ndy);
+          if (h) {
+            dHitRes = h;
+            dRotFrac = (k + h.t) / nSub;
+            break;
+          }
+          dx = ndx;
+          dy = ndy;
+        }
+
+        if (dHitRes) {
+          const dhx = dHitRes.x;
+          const dhy = dHitRes.y;
+          const rotImpact = normalizeDeg(rotAtFrameStart + spd * dt * dRotFrac);
+          const localAngle = worldRimToLocalBodyDeg(dhx, dhy, cx, cy, rotImpact);
+
+          // Find the closest stuck arrow within removal threshold
+          const REMOVE_THRESH_DEG = COLLISION_SEPARATION_DEG * 2;
+          let closestIdx = -1;
+          let closestDiff = Infinity;
+          for (let i = 0; i < s.stuckLocal.length; i++) {
+            const diff = Math.min(
+              Math.abs(normalizeDeg(localAngle) - normalizeDeg(s.stuckLocal[i])),
+              360 - Math.abs(normalizeDeg(localAngle) - normalizeDeg(s.stuckLocal[i]))
+            );
+            if (diff < REMOVE_THRESH_DEG && diff < closestDiff) {
+              closestDiff = diff;
+              closestIdx = i;
+            }
+          }
+
+          s.dFlying = false;
+          s.dProjX = cx;
+          s.dProjY = launchTopY;
+          s.dVx = 0;
+          s.dVy = 0;
+
+          if (closestIdx >= 0) {
+            s.stuckLocal.splice(closestIdx, 1);
+            void hitHaptic(haptics);
+          } else {
+            void missHaptic(haptics);
+          }
+          dirty = true;
+        } else {
+          s.dProjX = dx;
+          s.dProjY = dy;
+          // Cancel only if it flew past the circle and is heading away
+          if (dy > height + 50 || dy < -50 || dx < -50 || dx > width + 50) {
+            s.dFlying = false;
+            s.dProjX = cx;
+            s.dProjY = launchTopY;
+            s.dVx = 0;
+            s.dVy = 0;
+          }
+        }
+      }
+
       if (dirty) force();
       id = requestAnimationFrame(loop);
     };
@@ -321,6 +435,7 @@ export const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanva
     width,
     height,
     launchY,
+    launchTopY,
     haptics,
     zenMode,
   ]);
@@ -330,20 +445,31 @@ export const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanva
   const shaft = R * 0.48;
   const tailX = s.flying ? s.projX - s.vx * shaft : cx;
   const tailY = s.flying ? s.projY - s.vy * shaft : launchY;
+  const dTailX = s.dFlying ? s.dProjX - s.dVx * shaft : cx;
+  const dTailY = s.dFlying ? s.dProjY - s.dVy * shaft : launchTopY;
 
   return (
     <View style={styles.wrap} pointerEvents="box-none">
       <Svg width={width} height={height}>
-        {shapeSides === 0 ? (
-          <Circle cx={cx} cy={cy} r={R} stroke={palette.targetStroke} strokeWidth={2} fill="none" />
-        ) : (
-          <Polygon
-            points={polygonPoints(cx, cy, R, shapeSides)}
-            stroke={palette.targetStroke}
-            strokeWidth={2}
-            fill="none"
-          />
-        )}
+        <Defs>
+          <LinearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <Stop offset="0%" stopColor={palette.accent} stopOpacity="1" />
+            <Stop offset="50%" stopColor={palette.targetStroke} stopOpacity="0.45" />
+            <Stop offset="100%" stopColor={palette.accent} stopOpacity="1" />
+          </LinearGradient>
+        </Defs>
+        <G rotation={s.rotationDeg} originX={cx} originY={cy}>
+          {shapeSides === 0 ? (
+            <Circle cx={cx} cy={cy} r={R} stroke="url(#ringGrad)" strokeWidth={5} fill="none" />
+          ) : (
+            <Polygon
+              points={polygonPoints(cx, cy, R, shapeSides)}
+              stroke="url(#ringGrad)"
+              strokeWidth={5}
+              fill="none"
+            />
+          )}
+        </G>
         {config.dualLayer ? (
           <G rotation={s.innerRotationDeg} originX={cx} originY={cy}>
             {shapeSides === 0 ? (
@@ -396,6 +522,20 @@ export const GameCanvas = forwardRef<GameCanvasHandle, Props>(function GameCanva
               strokeLinecap="round"
             />
             <Path d={arrowHeadPath(tailX, tailY, s.projX, s.projY)} fill={palette.accent} />
+          </G>
+        ) : null}
+        {s.dFlying ? (
+          <G>
+            <Line
+              x1={dTailX}
+              y1={dTailY}
+              x2={s.dProjX}
+              y2={s.dProjY}
+              stroke="#ef4444"
+              strokeWidth={2.5}
+              strokeLinecap="round"
+            />
+            <Path d={arrowHeadPath(dTailX, dTailY, s.dProjX, s.dProjY)} fill="#ef4444" />
           </G>
         ) : null}
       </Svg>
